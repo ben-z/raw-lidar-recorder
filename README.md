@@ -1,17 +1,21 @@
 # Raw LiDAR Recorder
 
-A minimal, local-only iOS recorder: **Record → Stop → Export ZIP**.
-No account, backend, cloud SDK, or third-party iOS dependencies.
+A minimal iOS recorder: **Record → Stop → Export ZIP**.
+Recordings stay in app storage until exported. No account, app backend, or
+third-party iOS dependencies. Native Apple Maps displays saved GPS fixes.
 
 ## Install on your iPhone
 
 1. Download or clone this project on a Mac with **Xcode 16 or later**.
 2. Open **RawLiDAR.xcodeproj**. Select the **RawLiDAR** scheme.
+   Its Run action uses **Release** so sensor-buffer compression runs optimized.
+   Debug's unoptimized byte loops are unsuitable for real-time recording.
 3. In the target's **Signing & Capabilities**, choose your development team and
    change `com.example.RawLiDAR` to your own unique bundle identifier.
 4. Connect a **LiDAR-equipped iPhone/iPad running iOS/iPadOS 17 or later**.
    Enable Developer Mode if prompted. Select that device and press **Run**.
-5. Allow camera and motion access. Record a 5–10 second test, stop, and export.
+5. Choose camera, location, and motion permissions before recording. Record a
+   5–10 second test, stop, and export.
 
 An Apple ID personal team can be used for local development; Apple's provisioning
 restrictions apply. A physical device is required to test LiDAR. This download
@@ -20,13 +24,21 @@ is source code, not a signed IPA, TestFlight build, or App Store installation.
 ## Use
 
 - Tap **Record**, move the phone, then tap **Stop**.
-- Tap **Export latest**, then AirDrop the ZIP or choose **Save to Files**.
-- The folder button lists previous recordings and exports any selected one.
+- The folder button lists previous recordings.
+- Tap a recording to see its date, duration, size, frame count and recorded sensor
+  information, including a map of the GPS fix, coordinates, fix time and reported
+  accuracy when available.
+- Swipe a recording or open its details to export or delete it. Deletion asks for
+  confirmation and permanently removes that recording and its cached export from
+  the phone. Copies saved elsewhere are kept.
+- When exporting, AirDrop the ZIP or choose **Save to Files**.
+- During recording, the capture screen shows the latest GPS coordinates, reported
+  accuracy and fix time; the last fix remains visible after stopping.
 - Originals are also visible in **Files → On My iPhone → Raw LiDAR → Recordings**
   and through Finder file sharing. Copy a session directly for very large captures.
 - The app stops recording when it leaves the foreground, is interrupted, or runs
   low on storage. Start a new session when you return.
-- To reclaim storage, delete copied recordings from Files. Export ZIP copies in
+- To reclaim storage, delete recordings from the app or Files. Export ZIP copies in
   the app's temporary storage are replaced on the next export; iOS may also
   clear temporary files.
 
@@ -36,7 +48,7 @@ The app deliberately has no room-layout processing or reconstruction UI.
 
 | Stream | Stored representation |
 |---|---|
-| Camera image | Original native YCbCr planes, uncompressed; row padding removed |
+| Camera image | Original native YCbCr planes, losslessly compressed; row padding removed |
 | Scene depth | Original `sceneDepth.depthMap` pixel values; floating-point meters |
 | Depth confidence | Original confidence bytes, when available |
 | Smoothed depth | `smoothedSceneDepth` and its confidence, when supported/available |
@@ -46,6 +58,10 @@ The app deliberately has no room-layout processing or reconstruction UI.
 | SLAM features | XYZ float32 and uint64 landmark IDs; distinct from LiDAR returns |
 | Motion sensors | Individually timestamped accelerometer, gyroscope, and magnetometer samples |
 | Fused motion | Core Motion attitude, gravity, user acceleration, angular velocity, magnetic field and accuracy |
+| Altimeter | Barometric pressure in kPa, relative altitude in meters, and absolute altitude with reported accuracy/precision when supported |
+| Location | Core Location latitude/longitude, mean-sea-level and ellipsoidal altitude, accuracy, speed, course, floor/source information when provided |
+| Compass | Magnetic/true heading, accuracy, and magnetic vector in portrait device axes |
+| Device context | Battery level/state, thermal state, low-power mode, and device orientation at start and on changes |
 | Session metadata | Device identifier, OS, selected video format, sensor availability, timestamps, counts, timing gaps, stop reason |
 
 **“Raw” means the values exposed by Apple's public APIs, saved without our own
@@ -53,7 +69,10 @@ filtering or lossy encoding.** Camera data has Apple's image processing; depth
 has Apple's fusion/estimation. Original LiDAR time-of-flight returns, raw Bayer
 camera frames, Apple-internal IMU samples, and camera-to-IMU extrinsics are not
 provided by this recorder. Motion is Core Motion's exposed data, with its own
-rates/calibration. Audio, location, meshes, segmentation, and room objects are
+rates/calibration. Location is a fused Core Location estimate, not raw GNSS
+satellite observations. Denied access and acquisition errors are logged; sensor
+availability and location authorization are included in the manifest. Audio,
+meshes, segmentation, and room objects are
 outside this RGB-D/pose/IMU recorder's scope.
 
 This is an **ARKit recorder**, chosen to keep camera pose and RGB-D together.
@@ -71,6 +90,8 @@ Every recording and motion subscription has an identity. Old callbacks cannot
 write into a later session, and stopping a session twice has no effect. Export
 presentation follows sheet dismissal instead of an animation timer. Each export
 gets a fresh staging directory, with failed staging removed automatically.
+Recording and ZIP creation keep the screen awake. Switching away can suspend
+ZIP creation; keep the app foregrounded or copy the recording through Finder.
 
 ## Storage and timing
 
@@ -78,12 +99,25 @@ The app selects the smallest native ARKit camera format at ≤30 fps if availabl
 otherwise the smallest available format. It preserves every callback's buffers
 at that format. The actual selection is written to `manifest.json`.
 
+Pixel planes are compressed while recording, independently within each frame.
+Byte images use a reversible difference from the previous row; floating-point
+depth groups matching bytes of each element before zlib compression. These are
+byte rearrangements and modulo-256 arithmetic, not image filtering or numeric
+conversion. Every original packed byte can be recovered, including signed zero,
+nonfinite values and NaN payloads. No JPEG, HEVC, float16 narrowing, frame dropping,
+or previous-frame prediction is used. Features and JSON/JSONL remain uncompressed;
+they are small, and plaintext journals preserve incremental recovery.
+
 Raw camera frames are large: a 1920×1440 NV12 image is about 4.15 MB, or about
 124 MB/s at 30 fps before depth, confidence, features and metadata. That example
-is **roughly 7.5 GB/minute**. Check your actual device format and start short.
+is **roughly 7.5 GB/minute before lossless compression**. Actual stored size
+depends on the scene, camera noise and depth structure. Start short.
 Export requires additional free space for a ZIP and system staging; direct
 Files/Finder copying avoids ZIP staging for long recordings. File sizes shown
 in-app count payload bytes written, not filesystem allocation.
+The manifest separately totals decoded/stored pixel-buffer bytes and time spent
+compressing committed frames. Compression runs on the existing serial writer
+queue; no additional frame backlog or asynchronous compressor is created.
 
 ARKit callbacks and motion handlers use one serial writer queue. A frame is
 written synchronously and released; the app does not retain an unbounded queue
@@ -112,9 +146,17 @@ Every session contains:
 - `frames.jsonl`: one committed frame index entry per line.
 - `motion.jsonl`: one timestamped sensor sample per line.
 - `events.jsonl`: motion acquisition errors, if any.
+- `context.jsonl`: location, heading, authorization, and device-state records in
+  recordings made by build 2 or later; its path is declared in `manifest.context`.
 - `FORMAT.txt`: compact format notes included in each exported recording.
 - `frames/00000000/metadata.json`: paths and layout for that frame's files.
 - Binary plane files, and optional `features_xyz.f32` / `features_ids.u64`.
+- Build 3 uses `raw-lidar/2`: each pixel plane declares `encoding: zlib`, its
+  predictor, and `storedByteCount`. `byteCount`, row strides and pixel format
+  still describe decoded original bytes. `zlib` means a standard RFC 1950 stream
+  with Adler32 checksum, not Apple's raw-DEFLATE Compression-framework variant.
+  The reader verifies the checksum, exact decoded size and stream end before
+  reversing the predictor. It continues to read existing `raw-lidar/1` recordings.
 
 Read sizes, formats and filenames from metadata rather than assuming a camera
 or depth resolution. All binary numbers are little-endian. Matrices are JSON
@@ -129,6 +171,19 @@ Confidence is 0=low, 1=medium, 2=high. Invalid depth values are preserved.
 Core Motion vectors use device axes, not necessarily camera axes. Quaternion
 order is x,y,z,w; attitude uses the `xArbitraryZVertical` reference frame and
 is not interchangeable with ARKit's camera pose.
+
+Altimeter sample rates are controlled by Core Motion. Absolute-altitude records
+use boot-relative callback receipt time as `timestamp`, marked with
+`timestampBasis: receipt`; `sourceTimestamp` preserves the unmodified API time
+without assuming its clock. Other Core Motion timestamps remain acquisition
+times. Location and heading retain
+their original Unix timestamps, a boot-time estimate using a fixed session clock
+offset, and the boot-relative callback arrival time. Initial cached fixes and
+negative accuracy/speed/course sentinel values are preserved. Inspect reported
+accuracy and timestamps before use. Location does not automatically georeference
+the ARKit world; its yaw remains arbitrary. Sensor JSONL preserves callback order,
+so sort by timestamp when combining streams. Fused magnetic fields with accuracy
+`-1` are unavailable/uncalibrated, even when their vector contains zeros.
 
 ## Python postprocessing
 
@@ -172,18 +227,37 @@ planes and attachments for a precise image-processing pipeline.
 The Python reader has synthetic tests for binary fidelity (including nonfinite
 depth and large uint64 IDs), calibration scaling, camera/world axes, confidence
 filtering, YCbCr conversion, ZIP/folder reading, corrupt buffers and interrupted
-index recovery. All 13 tests pass in the authoring environment. Run
+index recovery, plus declared context streams in folders and ZIPs. Run
 `python3 -m unittest discover -s tests -v`.
 
-The included GitHub Actions workflow runs these tests and an unsigned iOS build
+The included GitHub Actions workflow runs these tests and an unsigned Release iOS build
 on macOS. It also compiles the production JSON helpers and ZIP exporter into a
-small integration test, with Python independently checking the ZIP payloads.
+small integration test, with Python independently checking production-compressed
+plane bytes and ZIP payloads.
 The first [CI run](https://github.com/ben-z/raw-lidar-recorder/actions/runs/41979132276)
 passed with Xcode 26.6: the unsigned iOS target built successfully, the production
 JSON/ZIP integration checks passed, and all 13 Python tests passed.
 
-The app has **not been signed or tested on a physical iPhone/iPad**. Before using
-important data, install it on your device and validate a short recording:
+Build 1 was signed, installed, and launched on an iPhone 12 Pro running iOS 26.6.
+A 39-second hardware recording contained 1,172 camera frames and 15,658 motion
+samples, with no frame timing gaps or acquisition errors. Three startup frames
+lacked depth; the remaining frames had raw/smoothed depth and confidence. The
+folder and a ZIP created on the Mac with the production exporter validated. This
+does not establish sustained throughput, ground-truth depth/pose accuracy, or
+on-phone ZIP completion. A later 13-second build-3 capture contained 390 frames,
+5,273 motion samples, 673 context records and no acquisition errors or timing
+gaps. Its 681 MB of decoded pixel planes occupied 215 MB before metadata. Location,
+heading and both altitude streams were present. Build 4 separates absolute-altimeter
+receipt time from the API source clock; build-3 absolute-altitude timestamps
+must not be treated as boot-relative.
+
+The production compressor recovered all 7,020 planes in the earlier recording
+byte for byte while reducing the complete folder from 2.06 GB to 643 MB. On the
+iPhone 12 Pro, 128 codec samples measured a median 13.4 ms and p95 14.3 ms per
+frame for compression alone. A separate camera-only test wrote 281 frames with
+no timing gaps, at a median 18.6 ms per frame including packing and disk writes.
+These short tests do not establish long-duration thermal or throughput limits.
+Before using important data:
 
 1. Confirm depth/confidence files exist and `--validate` passes.
 2. Point at a flat wall; compare depth to a known distance and inspect the PLY.
@@ -195,7 +269,7 @@ For an unsigned build check on a Mac:
 
 ```sh
 xcodebuild -project RawLiDAR.xcodeproj -scheme RawLiDAR \
-  -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+  -configuration Release -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
 ## Apple references

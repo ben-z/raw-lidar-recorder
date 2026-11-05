@@ -5,18 +5,49 @@ import Foundation
 /// Core Motion before the preceding recording stopped.
 final class MotionRecorder {
     private let manager = CMMotionManager()
+    private let altimeter = CMAltimeter()
+    private var permissionAltimeter: CMAltimeter?
     private let operationQueue = OperationQueue()
     private var generation: UUID?
 
     var availability: [String: Bool] {
         ["accelerometer": manager.isAccelerometerAvailable, "gyro": manager.isGyroAvailable,
-         "magnetometer": manager.isMagnetometerAvailable, "deviceMotion": manager.isDeviceMotionAvailable]
+         "magnetometer": manager.isMagnetometerAvailable, "deviceMotion": manager.isDeviceMotionAvailable,
+         "relativeAltitude": CMAltimeter.isRelativeAltitudeAvailable(),
+         "absoluteAltitude": CMAltimeter.isAbsoluteAltitudeAvailable()]
     }
 
     init(queue: DispatchQueue) {
         operationQueue.name = "raw-lidar.motion"
         operationQueue.maxConcurrentOperationCount = 1
         operationQueue.underlyingQueue = queue
+    }
+
+    static var authorizationPending: Bool {
+        (CMAltimeter.isRelativeAltitudeAvailable() || CMAltimeter.isAbsoluteAltitudeAvailable())
+            && CMAltimeter.authorizationStatus() == .notDetermined
+    }
+
+    /// Altimeter access can prompt even when accelerometer access was already used.
+    /// Resolve that prompt in preview so becoming inactive cannot stop a capture.
+    func prepareAuthorization(reportError: @escaping (String) -> Void) {
+        guard Self.authorizationPending, permissionAltimeter == nil else { return }
+        let permission = CMAltimeter()
+        permissionAltimeter = permission
+        let completed: (Bool, Error?) -> Void = { [weak self] hasData, error in
+            guard let self, self.permissionAltimeter === permission else { return }
+            permission.stopRelativeAltitudeUpdates()
+            permission.stopAbsoluteAltitudeUpdates()
+            self.permissionAltimeter = nil
+            if let error { reportError("Motion access failed: \(error.localizedDescription)") }
+            else if !hasData { reportError("Altimeter returned no data or error while preparing motion access.") }
+        }
+        if CMAltimeter.isRelativeAltitudeAvailable() {
+            permission.startRelativeAltitudeUpdates(to: operationQueue) { data, error in completed(data != nil, error) }
+        }
+        if CMAltimeter.isAbsoluteAltitudeAvailable() {
+            permission.startAbsoluteAltitudeUpdates(to: operationQueue) { data, error in completed(data != nil, error) }
+        }
     }
 
     func start(notBefore minimumTimestamp: Double, emit: @escaping ([String: Any]) -> Void) {
@@ -70,6 +101,30 @@ final class MotionRecorder {
                 ], error)
             }
         }
+        if CMAltimeter.isRelativeAltitudeAvailable() {
+            altimeter.startRelativeAltitudeUpdates(to: operationQueue) { data, error in
+                guard let data else {
+                    deliver("barometer", nil, [:], error ?? CaptureError.message("Altimeter returned no data or error."))
+                    return
+                }
+                deliver("barometer", data.timestamp,
+                        ["pressure_kPa": data.pressure, "relativeAltitude_m": data.relativeAltitude], error)
+            }
+        }
+        if CMAltimeter.isAbsoluteAltitudeAvailable() {
+            altimeter.startAbsoluteAltitudeUpdates(to: operationQueue) { data, error in
+                guard let data else {
+                    deliver("absoluteAltitude", nil, [:], error ?? CaptureError.message("Absolute altimeter returned no data or error."))
+                    return
+                }
+                // This API's source clock is not assumed to match the IMU boot clock.
+                let received = ProcessInfo.processInfo.systemUptime
+                deliver("absoluteAltitude", received,
+                        ["altitude_m": data.altitude, "accuracy_m": data.accuracy, "precision_m": data.precision,
+                         "timestampBasis": "receipt", "sourceTimestamp": data.timestamp,
+                         "sourceTimestampClock": "Core Motion CMAbsoluteAltitudeData.timestamp (unmodified; clock not assumed)"], error)
+            }
+        }
     }
 
     func stop() {
@@ -78,5 +133,7 @@ final class MotionRecorder {
         manager.stopGyroUpdates()
         manager.stopMagnetometerUpdates()
         manager.stopDeviceMotionUpdates()
+        altimeter.stopRelativeAltitudeUpdates()
+        altimeter.stopAbsoluteAltitudeUpdates()
     }
 }

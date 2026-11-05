@@ -44,6 +44,7 @@ final class CaptureEngine: NSObject, ARSessionDelegate {
 
     func preview() {
         queue.async {
+            self.motion.prepareAuthorization { [weak self] message in self?.onEvent?(.previewFailed(message)) }
             guard !self.running else { return }
             self.session.run(Self.configuration())
             self.running = true
@@ -57,13 +58,14 @@ final class CaptureEngine: NSObject, ARSessionDelegate {
         }
     }
 
-    func start(id: UUID, root: URL) {
+    func start(id: UUID, root: URL, contextInformation: [String: Any]) {
         queue.async {
             guard self.activeID == nil else { return }
             do {
                 let config = Self.configuration()
                 self.writer = try SessionWriter(root: root, videoFormat: config.videoFormat,
-                                                motionAvailability: self.motion.availability)
+                                                motionAvailability: self.motion.availability,
+                                                contextInformation: contextInformation)
                 self.activeID = id
                 self.lastUIUpdate = 0
                 self.session.run(config, options: [.resetTracking, .removeExistingAnchors])
@@ -86,6 +88,14 @@ final class CaptureEngine: NSObject, ARSessionDelegate {
         queue.async {
             guard self.activeID == id else { return }
             self.finish(reason: reason)
+        }
+    }
+
+    func appendContext(id: UUID, record: [String: Any]) {
+        queue.async {
+            guard self.activeID == id, let writer = self.writer else { return }
+            do { try writer.appendContext(record) }
+            catch { self.finish(reason: "Context write failed: \(error.localizedDescription)") }
         }
     }
 

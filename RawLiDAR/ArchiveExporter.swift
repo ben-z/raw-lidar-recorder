@@ -30,4 +30,17 @@ enum ArchiveExporter {
     static func remove(_ archive: URL) {
         try? FileManager.default.removeItem(at: archive.deletingLastPathComponent())
     }
+
+    /// Export staging can survive a previous app process until iOS clears it.
+    static func removeCachedExports(for recording: URL, in temporaryRoot: URL) throws {
+        let manager = FileManager.default
+        let children = try manager.contentsOfDirectory(at: temporaryRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        for child in children where child.lastPathComponent.hasPrefix("RawLiDAR-Export-") {
+            let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let archive = child.appendingPathComponent(recording.lastPathComponent + ".zip")
+            if manager.fileExists(atPath: archive.path) { try manager.removeItem(at: child) }
+        }
+    }
 }

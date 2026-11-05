@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 
 import numpy as np
@@ -35,7 +36,7 @@ class Session:
             self.prefix = ""
         try:
             self.manifest = self.json("manifest.json")
-            if self.manifest.get("schema") != "raw-lidar/1":
+            if self.manifest.get("schema") not in ("raw-lidar/1", "raw-lidar/2"):
                 raise ValueError("Unsupported capture schema")
         except Exception:
             self.close()
@@ -131,8 +132,16 @@ class Session:
             raise ValueError("Manifest frame count disagrees with index")
         motion_count = sum(1 for _ in self.records("motion.jsonl"))
         event_count = sum(1 for _ in self.records("events.jsonl"))
-        return {"frames": count, "framesWithoutDepth": missing_depth,
-                "timingGaps": gaps, "motionSamples": motion_count, "events": event_count}
+        result = {"frames": count, "framesWithoutDepth": missing_depth,
+                  "timingGaps": gaps, "motionSamples": motion_count, "events": event_count}
+        if "context" in self.manifest:
+            context_count = 0
+            for record in self.records(self.manifest["context"]["file"]):
+                if not isinstance(record["sensor"], str) or not np.isfinite(record["timestamp"]):
+                    raise ValueError("Context records need a sensor name and finite timestamp")
+                context_count += 1
+            result["contextSamples"] = context_count
+        return result
 
 
 class Frame:
@@ -152,19 +161,59 @@ class Frame:
             raise ValueError(f"Unsupported pixel format {code}")
         arrays = []
         for plane in item["planes"]:
-            raw = self.session.read(f"{self.path}/{plane['file']}")
-            expected = plane["rowBytes"] * plane["height"]
-            if len(raw) != expected or len(raw) != plane["byteCount"]:
-                raise ValueError(f"Incorrect byte length: {self.path}/{plane['file']}")
             dt = np.dtype(dtype)
+            for field in ("width", "height", "bytesPerPixel", "rowBytes", "byteCount"):
+                if type(plane[field]) is not int or plane[field] <= 0:
+                    raise ValueError(f"Invalid packed plane layout: {field} must be a positive integer")
             channels = plane["bytesPerPixel"] // dt.itemsize
-            if channels < 1 or plane["rowBytes"] != plane["width"] * channels * dt.itemsize:
+            if (plane["bytesPerPixel"] % dt.itemsize or channels < 1
+                    or plane["rowBytes"] != plane["width"] * plane["bytesPerPixel"]
+                    or plane["byteCount"] != plane["rowBytes"] * plane["height"]):
                 raise ValueError("Invalid packed plane layout")
+            relative = f"{self.path}/{plane['file']}"
+            raw = self.session.read(relative)
+            if self.session.manifest["schema"] == "raw-lidar/2":
+                raw = self._decode_plane(raw, plane, relative)
+            elif any(field in plane for field in ("encoding", "predictor", "storedByteCount")):
+                raise ValueError("Compressed plane metadata requires raw-lidar/2")
+            if len(raw) != plane["byteCount"]:
+                raise ValueError(f"Incorrect byte length: {relative}")
             shape = (plane["height"], plane["width"])
             if channels > 1:
                 shape += (channels,)
             arrays.append(np.frombuffer(raw, dtype=dt).reshape(shape))
         return arrays
+
+    @staticmethod
+    def _decode_plane(stored: bytes, plane: dict, relative: str) -> bytes:
+        required = {"encoding", "predictor", "storedByteCount"}
+        missing = required.difference(plane)
+        if missing:
+            raise ValueError(f"Missing compressed plane fields for {relative}: {', '.join(sorted(missing))}")
+        if plane["encoding"] != "zlib":
+            raise ValueError(f"Unsupported plane encoding: {plane['encoding']}")
+        if plane["predictor"] not in ("up", "byte-shuffle"):
+            raise ValueError(f"Unsupported plane predictor: {plane['predictor']}")
+        if type(plane["storedByteCount"]) is not int or plane["storedByteCount"] <= 0:
+            raise ValueError("storedByteCount must be a positive integer")
+        if len(stored) != plane["storedByteCount"]:
+            raise ValueError(f"Incorrect stored byte length: {relative}")
+        decoder = zlib.decompressobj()
+        try:
+            raw = decoder.decompress(stored, plane["byteCount"] + 1)
+        except zlib.error as error:
+            raise ValueError(f"Invalid zlib data for {relative}: {error}") from error
+        if len(raw) != plane["byteCount"]:
+            raise ValueError(f"Incorrect decoded byte length: {relative}")
+        if not decoder.eof:
+            raise ValueError(f"Incomplete zlib stream: {relative}")
+        if decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError(f"Trailing or unconsumed zlib data: {relative}")
+        values = np.frombuffer(raw, dtype=np.uint8)
+        if plane["predictor"] == "up":
+            rows = values.reshape(plane["height"], plane["rowBytes"])
+            return np.cumsum(rows, axis=0, dtype=np.uint8).tobytes()
+        return values.reshape(plane["bytesPerPixel"], -1).T.copy().tobytes()
 
     def depth(self, smoothed=False):
         return self.planes("smoothedDepth" if smoothed else "depth")[0]
@@ -226,7 +275,7 @@ class Frame:
             y = (y - 16) * (255 / 219)
             cb *= 255 / 224
             cr *= 255 / 224
-        matrix = str(item.get("attachments", {}).get("YCbCrMatrix", ""))
+        matrix = str(item["attachments"].get("CVImageBufferYCbCrMatrix", ""))
         if "709" in matrix:
             kr, kb = 0.2126, 0.0722
         elif "601" in matrix:

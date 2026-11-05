@@ -131,8 +131,16 @@ class Session:
             raise ValueError("Manifest frame count disagrees with index")
         motion_count = sum(1 for _ in self.records("motion.jsonl"))
         event_count = sum(1 for _ in self.records("events.jsonl"))
-        return {"frames": count, "framesWithoutDepth": missing_depth,
-                "timingGaps": gaps, "motionSamples": motion_count, "events": event_count}
+        result = {"frames": count, "framesWithoutDepth": missing_depth,
+                  "timingGaps": gaps, "motionSamples": motion_count, "events": event_count}
+        if "context" in self.manifest:
+            context_count = 0
+            for record in self.records(self.manifest["context"]["file"]):
+                if not isinstance(record["sensor"], str) or not np.isfinite(record["timestamp"]):
+                    raise ValueError("Context records need a sensor name and finite timestamp")
+                context_count += 1
+            result["contextSamples"] = context_count
+        return result
 
 
 class Frame:
@@ -226,7 +234,7 @@ class Frame:
             y = (y - 16) * (255 / 219)
             cb *= 255 / 224
             cr *= 255 / 224
-        matrix = str(item.get("attachments", {}).get("YCbCrMatrix", ""))
+        matrix = str(item["attachments"].get("CVImageBufferYCbCrMatrix", ""))
         if "709" in matrix:
             kr, kb = 0.2126, 0.0722
         elif "601" in matrix:

@@ -18,6 +18,7 @@ final class Recorder: ObservableObject {
     var busy: Bool { phase != .idle }
 
     private let engine = CaptureEngine()
+    private let context = ContextRecorder()
     private let exportQueue = DispatchQueue(label: "raw-lidar.export", qos: .utility)
     private var captureID: UUID?
     private var engineStarted = false
@@ -54,13 +55,21 @@ final class Recorder: ObservableObject {
             guard let self else { return }
             let allowed = await self.cameraAccess()
             guard self.previewRequest == request, self.foreground, self.phase == .idle else { return }
-            if allowed { self.engine.preview() }
+            if allowed {
+                self.context.requestLocationAccess()
+                self.engine.preview()
+            }
             else { self.status = "Allow Camera access in Settings to record." }
         }
     }
 
     func start() {
         guard supported, phase == .idle, foreground else { return }
+        guard !context.locationAuthorizationPending, !MotionRecorder.authorizationPending else {
+            preparePreview()
+            status = "Choose location and motion permissions before recording."
+            return
+        }
         previewRequest = nil
         let id = UUID()
         captureID = id
@@ -79,13 +88,14 @@ final class Recorder: ObservableObject {
             self.stats = CaptureStats()
             self.engineStarted = true
             UIApplication.shared.isIdleTimerDisabled = true
-            self.engine.start(id: id, root: self.root)
+            self.engine.start(id: id, root: self.root, contextInformation: self.context.information)
         }
     }
 
     func stop(reason: String = "user") {
         guard let id = captureID, phase == .recording || phase == .starting else { return }
         if engineStarted {
+            context.stop()
             phase = .stopping
             status = "Saving…"
             engine.stop(id: id, reason: reason)
@@ -110,6 +120,7 @@ final class Recorder: ObservableObject {
     func export(_ directory: URL, completion: @escaping (Result<URL, Error>) -> Void) {
         guard phase == .idle else { return }
         phase = .exporting
+        UIApplication.shared.isIdleTimerDisabled = true
         status = "Preparing ZIP…"
         // The preceding share UI has closed before another export can start.
         if let exportedURL { ArchiveExporter.remove(exportedURL) }
@@ -118,6 +129,7 @@ final class Recorder: ObservableObject {
             let result = Result { try ArchiveExporter.create(from: directory) }
             DispatchQueue.main.async {
                 self.phase = .idle
+                UIApplication.shared.isIdleTimerDisabled = false
                 switch result {
                 case .success(let url):
                     self.exportedURL = url
@@ -139,6 +151,9 @@ final class Recorder: ObservableObject {
         switch event {
         case .started:
             guard phase == .starting else { return }
+            if let id = captureID {
+                context.start { [weak self] record in self?.engine.appendContext(id: id, record: record) }
+            }
             phase = .recording
             status = "Recording · keep this app open"
         case .updated(_, let update, let tracking, let hasDepth):
@@ -146,6 +161,7 @@ final class Recorder: ObservableObject {
             stats = update
             status = hasDepth ? "Recording · tracking: \(tracking)" : "Recording · waiting for depth"
         case .stopped(_, let final, let message):
+            context.stop()
             stats = final
             captureID = nil
             engineStarted = false

@@ -29,7 +29,7 @@ def make_capture(root):
                                rowBytes=w*bpp, sourceRowBytes=w*bpp+16, byteCount=len(raw)))
         return dict(pixelFormat=int.from_bytes(code.encode(), "big"), pixelFormatFourCC=code,
                     width=arrays[0].shape[1], height=arrays[0].shape[0], planes=planes,
-                    attachments={"YCbCrMatrix": "ITU_R_709_2"})
+                    attachments={"CVImageBufferYCbCrMatrix": "ITU_R_709_2"})
     depth = np.array([[2, 2], [np.nan, 0]], dtype="<f4")
     rgb = image("rgb", "420f", [np.full((4, 4), 100, dtype="u1"), np.full((2, 2, 2), 128, dtype="u1")])
     meta = dict(index=0, timestamp=100.0, path="frames/00000000", imageResolution=[4, 4],
@@ -81,6 +81,42 @@ class ReaderTests(unittest.TestCase):
             frame = session.frame(0)
             self.assertEqual(frame.planes("rgb")[1].shape, (2, 2, 2))
             np.testing.assert_equal(frame.rgb(), np.full((4, 4, 3), 100, dtype="u1"))
+
+    def test_declared_context_stream_preserves_location_values(self):
+        manifest_path = self.root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["context"] = {"file": "context.jsonl"}
+        manifest_path.write_text(json.dumps(manifest))
+        record = {"sensor": "location", "timestamp": 100.25, "timestampUnix": 1800000000.25,
+                  "latitudeDegrees": 37.5, "longitudeDegrees": -122.5,
+                  "speedMetersPerSecond": -1, "horizontalAccuracyMeters": 10}
+        (self.root / "context.jsonl").write_text(json.dumps(record) + "\n")
+        with Session(self.root) as session:
+            self.assertEqual(session.validate()["contextSamples"], 1)
+            self.assertEqual(list(session.records("context.jsonl")), [record])
+        archive_path = Path(self.temp.name) / "context.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            for path in self.root.rglob("*"):
+                if path.is_file():
+                    archive.write(path, path.relative_to(self.root))
+        with Session(archive_path) as session:
+            self.assertEqual(session.validate()["contextSamples"], 1)
+            self.assertEqual(list(session.records("context.jsonl")), [record])
+        (self.root / "context.jsonl").unlink()
+        with Session(self.root) as session:
+            with self.assertRaises(FileNotFoundError):
+                session.validate()
+
+    def test_invalid_context_record_is_rejected(self):
+        path = self.root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["context"] = {"file": "context.jsonl"}
+        path.write_text(json.dumps(manifest))
+        for sensor, stamp in [(123, 100.0), ("location", float("nan"))]:
+            (self.root / "context.jsonl").write_text(json.dumps({"sensor": sensor, "timestamp": stamp}) + "\n")
+            with Session(self.root) as session:
+                with self.assertRaisesRegex(ValueError, "sensor name and finite timestamp"):
+                    session.validate()
 
     def test_zip_with_and_without_enclosing_folder(self):
         for prefix in ("", "session/"):

@@ -11,7 +11,8 @@ No account, backend, cloud SDK, or third-party iOS dependencies.
    change `com.example.RawLiDAR` to your own unique bundle identifier.
 4. Connect a **LiDAR-equipped iPhone/iPad running iOS/iPadOS 17 or later**.
    Enable Developer Mode if prompted. Select that device and press **Run**.
-5. Allow camera and motion access. Record a 5–10 second test, stop, and export.
+5. Choose camera, location, and motion permissions before recording. Record a
+   5–10 second test, stop, and export.
 
 An Apple ID personal team can be used for local development; Apple's provisioning
 restrictions apply. A physical device is required to test LiDAR. This download
@@ -46,6 +47,10 @@ The app deliberately has no room-layout processing or reconstruction UI.
 | SLAM features | XYZ float32 and uint64 landmark IDs; distinct from LiDAR returns |
 | Motion sensors | Individually timestamped accelerometer, gyroscope, and magnetometer samples |
 | Fused motion | Core Motion attitude, gravity, user acceleration, angular velocity, magnetic field and accuracy |
+| Altimeter | Barometric pressure in kPa, relative altitude in meters, and absolute altitude with reported accuracy/precision when supported |
+| Location | Core Location latitude/longitude, mean-sea-level and ellipsoidal altitude, accuracy, speed, course, floor/source information when provided |
+| Compass | Magnetic/true heading, accuracy, and magnetic vector in portrait device axes |
+| Device context | Battery level/state, thermal state, low-power mode, and device orientation at start and on changes |
 | Session metadata | Device identifier, OS, selected video format, sensor availability, timestamps, counts, timing gaps, stop reason |
 
 **“Raw” means the values exposed by Apple's public APIs, saved without our own
@@ -53,7 +58,10 @@ filtering or lossy encoding.** Camera data has Apple's image processing; depth
 has Apple's fusion/estimation. Original LiDAR time-of-flight returns, raw Bayer
 camera frames, Apple-internal IMU samples, and camera-to-IMU extrinsics are not
 provided by this recorder. Motion is Core Motion's exposed data, with its own
-rates/calibration. Audio, location, meshes, segmentation, and room objects are
+rates/calibration. Location is a fused Core Location estimate, not raw GNSS
+satellite observations. Denied access and acquisition errors are logged; sensor
+availability and location authorization are included in the manifest. Audio,
+meshes, segmentation, and room objects are
 outside this RGB-D/pose/IMU recorder's scope.
 
 This is an **ARKit recorder**, chosen to keep camera pose and RGB-D together.
@@ -71,6 +79,8 @@ Every recording and motion subscription has an identity. Old callbacks cannot
 write into a later session, and stopping a session twice has no effect. Export
 presentation follows sheet dismissal instead of an animation timer. Each export
 gets a fresh staging directory, with failed staging removed automatically.
+Recording and ZIP creation keep the screen awake. Switching away can suspend
+ZIP creation; keep the app foregrounded or copy the recording through Finder.
 
 ## Storage and timing
 
@@ -112,6 +122,8 @@ Every session contains:
 - `frames.jsonl`: one committed frame index entry per line.
 - `motion.jsonl`: one timestamped sensor sample per line.
 - `events.jsonl`: motion acquisition errors, if any.
+- `context.jsonl`: location, heading, authorization, and device-state records in
+  recordings made by build 2 or later; its path is declared in `manifest.context`.
 - `FORMAT.txt`: compact format notes included in each exported recording.
 - `frames/00000000/metadata.json`: paths and layout for that frame's files.
 - Binary plane files, and optional `features_xyz.f32` / `features_ids.u64`.
@@ -129,6 +141,15 @@ Confidence is 0=low, 1=medium, 2=high. Invalid depth values are preserved.
 Core Motion vectors use device axes, not necessarily camera axes. Quaternion
 order is x,y,z,w; attitude uses the `xArbitraryZVertical` reference frame and
 is not interchangeable with ARKit's camera pose.
+
+Altimeter sample rates are controlled by Core Motion. Location and heading retain
+their original Unix timestamps, a boot-time estimate using a fixed session clock
+offset, and the boot-relative callback arrival time. Initial cached fixes and
+negative accuracy/speed/course sentinel values are preserved. Inspect reported
+accuracy and timestamps before use. Location does not automatically georeference
+the ARKit world; its yaw remains arbitrary. Sensor JSONL preserves callback order,
+so sort by timestamp when combining streams. Fused magnetic fields with accuracy
+`-1` are unavailable/uncalibrated, even when their vector contains zeros.
 
 ## Python postprocessing
 
@@ -172,7 +193,7 @@ planes and attachments for a precise image-processing pipeline.
 The Python reader has synthetic tests for binary fidelity (including nonfinite
 depth and large uint64 IDs), calibration scaling, camera/world axes, confidence
 filtering, YCbCr conversion, ZIP/folder reading, corrupt buffers and interrupted
-index recovery. All 13 tests pass in the authoring environment. Run
+index recovery, plus declared context streams in folders and ZIPs. Run
 `python3 -m unittest discover -s tests -v`.
 
 The included GitHub Actions workflow runs these tests and an unsigned iOS build
@@ -182,8 +203,15 @@ The first [CI run](https://github.com/ben-z/raw-lidar-recorder/actions/runs/4197
 passed with Xcode 26.6: the unsigned iOS target built successfully, the production
 JSON/ZIP integration checks passed, and all 13 Python tests passed.
 
-The app has **not been signed or tested on a physical iPhone/iPad**. Before using
-important data, install it on your device and validate a short recording:
+Build 1 was signed, installed, and launched on an iPhone 12 Pro running iOS 26.6.
+A 39-second hardware recording contained 1,172 camera frames and 15,658 motion
+samples, with no frame timing gaps or acquisition errors. Three startup frames
+lacked depth; the remaining frames had raw/smoothed depth and confidence. The
+folder and a ZIP created on the Mac with the production exporter validated. This
+does not establish sustained throughput, ground-truth depth/pose accuracy, or
+on-phone ZIP completion. The additional build-2 location, heading, altitude, and
+device-context streams still require a new hardware recording to validate.
+Before using important data:
 
 1. Confirm depth/confidence files exist and `--validate` passes.
 2. Point at a flat wall; compare depth to a known distance and inspect the PLY.

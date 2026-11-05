@@ -1,0 +1,42 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		000000000000000000000078 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureEngine.swift; sourceTree = "<group>"; };
+		0000000000000000000000DC = { isa = PBXBuildFile; fileRef = 000000000000000000000078; };
+		000000000000000000000079 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionRecorder.swift; sourceTree = "<group>"; };
+		0000000000000000000000DD = { isa = PBXBuildFile; fileRef = 000000000000000000000079; };
+		00000000000000000000007A = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveExporter.swift; sourceTree = "<group>"; };
+		0000000000000000000000DE = { isa = PBXBuildFile; fileRef = 00000000000000000000007A; };
+		00000000000000000000007B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureFormat.swift; sourceTree = "<group>"; };
+		0000000000000000000000DF = { isa = PBXBuildFile; fileRef = 00000000000000000000007B; };
+		000000000000000000000064 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawLiDARApp.swift; sourceTree = "<group>"; };
+		0000000000000000000000C8 = { isa = PBXBuildFile; fileRef = 000000000000000000000064; };
+		000000000000000000000065 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		0000000000000000000000C9 = { isa = PBXBuildFile; fileRef = 000000000000000000000065; };
+		000000000000000000000066 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recorder.swift; sourceTree = "<group>"; };
+		0000000000000000000000CA = { isa = PBXBuildFile; fileRef = 000000000000000000000066; };
+		000000000000000000000067 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionWriter.swift; sourceTree = "<group>"; };
+		0000000000000000000000CB = { isa = PBXBuildFile; fileRef = 000000000000000000000067; };
+		00000000000000000000006E = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		00000000000000000000006F = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RawLiDAR.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		00000000000000000000000A = { isa = PBXGroup; children = (00000000000000000000000B, 00000000000000000000000C,); sourceTree = "<group>"; };
+		00000000000000000000000B = { isa = PBXGroup; children = (000000000000000000000064, 000000000000000000000065, 000000000000000000000066, 000000000000000000000067, 000000000000000000000078, 000000000000000000000079, 00000000000000000000007A, 00000000000000000000007B, 00000000000000000000006E,); path = RawLiDAR; sourceTree = "<group>"; };
+		00000000000000000000000C = { isa = PBXGroup; children = (00000000000000000000006F,); name = Products; sourceTree = "<group>"; };
+		000000000000000000000014 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (0000000000000000000000C8, 0000000000000000000000C9, 0000000000000000000000CA, 0000000000000000000000CB, 0000000000000000000000DC, 0000000000000000000000DD, 0000000000000000000000DE, 0000000000000000000000DF,); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000015 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000016 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000001E = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000029; buildPhases = (000000000000000000000014, 000000000000000000000015, 000000000000000000000016,); buildRules = (); dependencies = (); name = RawLiDAR; productName = RawLiDAR; productReference = 00000000000000000000006F; productType = "com.apple.product-type.application"; };
+		000000000000000000000001 = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; TargetAttributes = { 00000000000000000000001E = { CreatedOnToolsVersion = 16.0; }; }; };
+            buildConfigurationList = 000000000000000000000028; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = 00000000000000000000000A; productRefGroup = 00000000000000000000000C; projectDirPath = ""; projectRoot = ""; targets = (00000000000000000000001E,); };
+		000000000000000000000032 = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; }; name = Debug; };
+		000000000000000000000033 = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_OPTIMIZATION_LEVEL = "-O"; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+		000000000000000000000034 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = RawLiDAR/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.RawLiDAR; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		000000000000000000000035 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = RawLiDAR/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.RawLiDAR; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		000000000000000000000028 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000032, 000000000000000000000033,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		000000000000000000000029 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000034, 000000000000000000000035,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	};
+	rootObject = 000000000000000000000001;
+}

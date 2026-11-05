@@ -9,7 +9,7 @@
     <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleVersion</key><string>4</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>NSCameraUsageDescription</key><string>Record camera images and LiDAR depth for your own export and postprocessing.</string>
     <key>NSMotionUsageDescription</key><string>Record timestamped motion sensor data alongside your LiDAR recording.</string>

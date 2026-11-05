@@ -117,8 +117,12 @@ final class MotionRecorder {
                     deliver("absoluteAltitude", nil, [:], error ?? CaptureError.message("Absolute altimeter returned no data or error."))
                     return
                 }
-                deliver("absoluteAltitude", data.timestamp,
-                        ["altitude_m": data.altitude, "accuracy_m": data.accuracy, "precision_m": data.precision], error)
+                // This API's source clock is not assumed to match the IMU boot clock.
+                let received = ProcessInfo.processInfo.systemUptime
+                deliver("absoluteAltitude", received,
+                        ["altitude_m": data.altitude, "accuracy_m": data.accuracy, "precision_m": data.precision,
+                         "timestampBasis": "receipt", "sourceTimestamp": data.timestamp,
+                         "sourceTimestampClock": "Core Motion CMAbsoluteAltitudeData.timestamp (unmodified; clock not assumed)"], error)
             }
         }
     }

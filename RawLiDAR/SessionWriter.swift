@@ -1,7 +1,7 @@
 import ARKit
 import Foundation
 
-/// Used only on Recorder.captureQueue. No ARFrame is retained after its delegate callback.
+/// Used only on CaptureEngine's queue. No ARFrame is retained after its delegate callback.
 final class SessionWriter {
     let directory: URL
     private let index: FileHandle
@@ -15,6 +15,9 @@ final class SessionWriter {
     private var lastTimestamp: Double?
     private(set) var gapCount = 0
     private var maximumGap = 0.0
+    private var uncompressedBufferBytes: Int64 = 0
+    private var storedBufferBytes: Int64 = 0
+    private var bufferCompressionSeconds = 0.0
     private let expectedInterval: Double
 
     init(root: URL, videoFormat: ARConfiguration.VideoFormat, motionAvailability: [String: Bool],
@@ -36,7 +39,7 @@ final class SessionWriter {
         context = try open("context.jsonl")
         expectedInterval = 1.0 / Double(videoFormat.framesPerSecond)
         manifest = [
-            "schema": "raw-lidar/1", "state": "recording", "createdUTC": ISO8601DateFormatter().string(from: Date()),
+            "schema": "raw-lidar/2", "state": "recording", "createdUTC": ISO8601DateFormatter().string(from: Date()),
             "systemUptimeAtStart": ProcessInfo.processInfo.systemUptime,
             "osVersion": ProcessInfo.processInfo.operatingSystemVersionString,
             "hardware": hardwareIdentifier(),
@@ -86,9 +89,15 @@ final class SessionWriter {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var committed = false
         let previousBytes = bytes
+        let previousUncompressedBufferBytes = uncompressedBufferBytes
+        let previousStoredBufferBytes = storedBufferBytes
+        let previousCompressionSeconds = bufferCompressionSeconds
         defer {
             if !committed {
                 bytes = previousBytes
+                uncompressedBufferBytes = previousUncompressedBufferBytes
+                storedBufferBytes = previousStoredBufferBytes
+                bufferCompressionSeconds = previousCompressionSeconds
                 try? FileManager.default.removeItem(at: folder)
             }
         }
@@ -171,6 +180,9 @@ final class SessionWriter {
         manifest["finishedUTC"] = ISO8601DateFormatter().string(from: Date())
         manifest["frameCount"] = frameCount
         manifest["payloadBytes"] = bytes
+        manifest["uncompressedBufferBytes"] = uncompressedBufferBytes
+        manifest["storedBufferBytes"] = storedBufferBytes
+        manifest["bufferCompressionSeconds"] = bufferCompressionSeconds
         manifest["firstFrameTimestamp"] = firstTimestamp.map { $0 as Any } ?? NSNull()
         manifest["lastFrameTimestamp"] = lastTimestamp.map { $0 as Any } ?? NSNull()
         manifest["durationSeconds"] = duration
@@ -209,10 +221,20 @@ final class SessionWriter {
             guard packedStride <= stride else { throw CaptureError.message("Invalid pixel plane stride.") }
             var packed = Data(capacity: packedStride * height)
             for y in 0..<height { packed.append(base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self), count: packedStride) }
-            let file = "\(prefix)_\(plane).bin"
-            try write(packed, to: folder.appendingPathComponent(file))
+            let predictor: BufferCompression.Predictor =
+                format == kCVPixelFormatType_DepthFloat32 || format == kCVPixelFormatType_DepthFloat16 ? .byteShuffle : .up
+            let began = DispatchTime.now().uptimeNanoseconds
+            let encoded = try BufferCompression.encode(packed, rowBytes: packedStride,
+                                                       elementBytes: bpp, predictor: predictor)
+            bufferCompressionSeconds += Double(DispatchTime.now().uptimeNanoseconds - began) / 1_000_000_000
+            let file = "\(prefix)_\(plane).bin.zlib"
+            try write(encoded, to: folder.appendingPathComponent(file))
+            uncompressedBufferBytes += Int64(packed.count)
+            storedBufferBytes += Int64(encoded.count)
             planes.append(["file": file, "width": width, "height": height, "bytesPerPixel": bpp,
-                           "rowBytes": packedStride, "sourceRowBytes": stride, "byteCount": packed.count])
+                           "rowBytes": packedStride, "sourceRowBytes": stride, "byteCount": packed.count,
+                           "encoding": BufferCompression.encoding, "predictor": predictor.rawValue,
+                           "storedByteCount": encoded.count])
         }
         let attachments = CVBufferCopyAttachments(buffer, .shouldPropagate) as? [String: Any] ?? [:]
         return ["pixelFormat": format, "pixelFormatFourCC": fourCC(format),
@@ -235,12 +257,18 @@ final class SessionWriter {
     }
 
     static let formatNotes = """
-    raw-lidar/1. Read README.md in the source project for the full format.
+    raw-lidar/2. Read README.md in the source project for the full format.
     frames.jsonl is the committed frame index. Ignore frame folders absent from it.
     Every frame has metadata.json plus binary planes. All paths inside metadata
     are relative to that frame folder. Pixels retain native sensor orientation.
     Depth is Apple-processed axial z in meters. Float buffers are little-endian.
     NV12 RGB has a full-size Y plane and half-size interleaved CbCr plane.
+    Each pixel plane is an independent RFC1950 zlib stream with Adler32 checksum.
+    Decompress, then reverse its declared predictor. Up: first row unchanged,
+    then add the decoded previous row bytewise modulo 256. Byte-shuffle: groups
+    all byte-0 values, then all byte-1 values, etc. of bytesPerPixel-byte elements.
+    byteCount/rowBytes describe decoded packed bytes; storedByteCount is file size.
+    No floating-point conversion, temporal prediction or precision reduction occurs.
     Use pixelFormat/attachments to select color range and YCbCr matrix.
     Matrices are stored as rows. cameraToWorld uses ARKit camera axes (+x right,
     +y up, looking toward -z). Scale intrinsics from imageResolution to depth
@@ -260,6 +288,8 @@ final class SessionWriter {
     Geographic locations do not georeference the ARKit world automatically.
     Altimeter records in motion.jsonl preserve pressure in kPa and altitude in m.
     Altimeter update rates are system-controlled; use actual sample timestamps.
+    Absolute-altitude timestamp is boot-relative receipt time (timestampBasis:
+    receipt). sourceTimestamp retains the API value with no assumed source clock.
     Device state uses UIKit/ProcessInfo raw enum values; batteryLevel is a 0...1
     fraction, or -1 when unavailable. Heading/speed/accuracy sentinels are not zeros.
     """

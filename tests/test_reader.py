@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -14,30 +15,61 @@ spec.loader.exec_module(module)
 Session = module.Session
 
 
+def write_image(folder, prefix, code, arrays):
+    planes = []
+    for i, array in enumerate(arrays):
+        file = f"{prefix}_{i}.bin"
+        raw = array.tobytes()
+        (folder / file).write_bytes(raw)
+        h, w = array.shape[:2]
+        bpp = array.dtype.itemsize * (array.shape[2] if array.ndim == 3 else 1)
+        planes.append(dict(file=file, width=w, height=h, bytesPerPixel=bpp,
+                           rowBytes=w*bpp, sourceRowBytes=w*bpp+16, byteCount=len(raw)))
+    return dict(pixelFormat=int.from_bytes(code.encode(), "big"), pixelFormatFourCC=code,
+                width=arrays[0].shape[1], height=arrays[0].shape[0], planes=planes,
+                attachments={"CVImageBufferYCbCrMatrix": "ITU_R_709_2"})
+
+
+def compress_capture(root, predictor):
+    path = root / "frames/00000000/metadata.json"
+    meta = json.loads(path.read_text())
+    for key in ("rgb", "depth", "confidence", "smoothedDepth", "smoothedConfidence"):
+        if key not in meta:
+            continue
+        for plane in meta[key]["planes"]:
+            original = path.parent / plane["file"]
+            values = np.frombuffer(original.read_bytes(), dtype="u1")
+            if predictor == "up":
+                rows = values.reshape(plane["height"], plane["rowBytes"])
+                filtered = rows.copy()
+                filtered[1:] = rows[1:] - rows[:-1]
+            elif predictor == "byte-shuffle":
+                filtered = values.reshape(-1, plane["bytesPerPixel"]).T.copy()
+            else:
+                raise ValueError(predictor)
+            encoded = zlib.compress(filtered.tobytes(), level=1)
+            plane["file"] += ".zlib"
+            plane.update(encoding="zlib", predictor=predictor, storedByteCount=len(encoded))
+            (path.parent / plane["file"]).write_bytes(encoded)
+            original.unlink()
+    path.write_text(json.dumps(meta))
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema"] = "raw-lidar/2"
+    manifest_path.write_text(json.dumps(manifest))
+
+
 def make_capture(root):
     folder = root / "frames/00000000"
     folder.mkdir(parents=True)
-    def image(prefix, code, arrays):
-        planes = []
-        for i, array in enumerate(arrays):
-            file = f"{prefix}_{i}.bin"
-            raw = array.tobytes()
-            (folder / file).write_bytes(raw)
-            h, w = array.shape[:2]
-            bpp = array.dtype.itemsize * (array.shape[2] if array.ndim == 3 else 1)
-            planes.append(dict(file=file, width=w, height=h, bytesPerPixel=bpp,
-                               rowBytes=w*bpp, sourceRowBytes=w*bpp+16, byteCount=len(raw)))
-        return dict(pixelFormat=int.from_bytes(code.encode(), "big"), pixelFormatFourCC=code,
-                    width=arrays[0].shape[1], height=arrays[0].shape[0], planes=planes,
-                    attachments={"CVImageBufferYCbCrMatrix": "ITU_R_709_2"})
     depth = np.array([[2, 2], [np.nan, 0]], dtype="<f4")
-    rgb = image("rgb", "420f", [np.full((4, 4), 100, dtype="u1"), np.full((2, 2, 2), 128, dtype="u1")])
+    rgb = write_image(folder, "rgb", "420f", [np.full((4, 4), 100, dtype="u1"), np.full((2, 2, 2), 128, dtype="u1")])
     meta = dict(index=0, timestamp=100.0, path="frames/00000000", imageResolution=[4, 4],
                 intrinsics=[[4, 0, 0], [0, 4, 0], [0, 0, 1]],
                 cameraToWorld=[[1, 0, 0, 10], [0, 1, 0, 20], [0, 0, 1, 30], [0, 0, 0, 1]],
-                rgb=rgb, depth=image("depth", "fdep", [depth]),
-                confidence=image("confidence", "L008", [np.array([[2, 1], [0, 2]], dtype="u1")]),
-                smoothedDepth=image("smoothed_depth", "hdep", [depth.astype("<f2")]))
+                rgb=rgb, depth=write_image(folder, "depth", "fdep", [depth]),
+                confidence=write_image(folder, "confidence", "L008", [np.array([[2, 1], [0, 2]], dtype="u1")]),
+                smoothedDepth=write_image(folder, "smoothed_depth", "hdep", [depth.astype("<f2")]))
     xyz = np.array([[1, 2, 3]], dtype="<f4")
     ids = np.array([2**63 + 123], dtype="<u8")
     (folder / "features_xyz.f32").write_bytes(xyz.tobytes())
@@ -209,6 +241,195 @@ class ReaderTests(unittest.TestCase):
             rgb = session.frame(0).rgb()
             np.testing.assert_equal(rgb[:2], 0)
             np.testing.assert_equal(rgb[2:], 255)
+
+    def test_compressed_planes_preserve_float_bits_and_uint64_ids(self):
+        float32_bits = np.array([
+            0x00000000, 0x80000000, 0x7f800000, 0xff800000,
+            0x7fc12345, 0x7fc54321, 0x7fa12345, 0xffc12345,
+            0x00000001, 0x80000001, 0x3f800347, 0x4780e800,
+            0x7f7fffff, 0xff7fffff, 0x00800000, 0x80800000,
+        ], dtype="<u4").reshape(4, 4)
+        float16_bits = np.array([
+            0x0000, 0x8000, 0x7c00, 0xfc00, 0x7e11, 0x7c01, 0xfe12, 0x0001,
+            0x8001, 0x0400, 0x8400, 0x3c01, 0x7bff, 0xfbff, 0x3555, 0xb555,
+        ], dtype="<u2").reshape(4, 4)
+        feature_bits = float32_bits.reshape(-1)[:9].reshape(3, 3)
+        feature_ids = np.array([0, 2**63 + 123, 2**64 - 1], dtype="<u8")
+        for predictor in ("up", "byte-shuffle"):
+            with self.subTest(predictor=predictor):
+                root = Path(self.temp.name) / predictor
+                make_capture(root)
+                path = root / "frames/00000000/metadata.json"
+                meta = json.loads(path.read_text())
+                meta["depth"] = write_image(path.parent, "depth", "fdep", [float32_bits.view("<f4")])
+                meta["smoothedDepth"] = write_image(path.parent, "smoothed_depth", "hdep", [float16_bits.view("<f2")])
+                meta["features"]["count"] = 3
+                (path.parent / meta["features"]["xyz"]).write_bytes(feature_bits.tobytes())
+                (path.parent / meta["features"]["ids"]).write_bytes(feature_ids.tobytes())
+                path.write_text(json.dumps(meta))
+                compress_capture(root, predictor)
+                with Session(root) as session:
+                    frame = session.frame(0)
+                    self.assertEqual(frame.depth().tobytes(), float32_bits.tobytes())
+                    self.assertEqual(frame.depth(smoothed=True).tobytes(), float16_bits.tobytes())
+                    xyz, ids = frame.features()
+                    self.assertEqual(xyz.tobytes(), feature_bits.tobytes())
+                    self.assertEqual(ids.tobytes(), feature_ids.tobytes())
+                    self.assertEqual(session.validate()["frames"], 1)
+
+    def test_compressed_nv12_planes_and_confidence_are_byte_exact(self):
+        y = np.array([[255, 0, 128, 7], [0, 255, 1, 250],
+                      [7, 0, 255, 127], [1, 2, 3, 4]], dtype="u1")
+        uv = np.array([[[250, 0], [255, 128]], [[1, 255], [0, 7]]], dtype="u1")
+        confidence = np.array([[0, 1], [2, 0]], dtype="u1")
+        for predictor in ("up", "byte-shuffle"):
+            with self.subTest(predictor=predictor):
+                root = Path(self.temp.name) / predictor
+                make_capture(root)
+                path = root / "frames/00000000/metadata.json"
+                meta = json.loads(path.read_text())
+                meta["rgb"] = write_image(path.parent, "rgb", "420f", [y, uv])
+                meta["confidence"] = write_image(path.parent, "confidence", "L008", [confidence])
+                path.write_text(json.dumps(meta))
+                compress_capture(root, predictor)
+                with Session(root) as session:
+                    frame = session.frame(0)
+                    planes = frame.planes("rgb")
+                    self.assertEqual([p.tobytes() for p in planes], [y.tobytes(), uv.tobytes()])
+                    self.assertEqual(frame.confidence().tobytes(), confidence.tobytes())
+
+    def test_compressed_bgra_preserves_all_channels(self):
+        pixels = np.array([[[255, 0, 1, 128], [3, 254, 9, 0]],
+                           [[0, 255, 127, 255], [128, 7, 0, 1]]], dtype="u1")
+        path = self.root / "frames/00000000/metadata.json"
+        meta = json.loads(path.read_text())
+        meta["rgb"] = write_image(path.parent, "rgb", "BGRA", [pixels])
+        path.write_text(json.dumps(meta))
+        compress_capture(self.root, "byte-shuffle")
+        with Session(self.root) as session:
+            frame = session.frame(0)
+            self.assertEqual(frame.planes("rgb")[0].tobytes(), pixels.tobytes())
+            np.testing.assert_array_equal(frame.rgb(), pixels[..., [2, 1, 0]])
+
+    def test_compressed_capture_reads_from_zip(self):
+        compress_capture(self.root, "up")
+        for prefix in ("", "session/"):
+            with self.subTest(prefix=prefix):
+                archive_path = Path(self.temp.name) / "compressed.zip"
+                with zipfile.ZipFile(archive_path, "w") as archive:
+                    for path in self.root.rglob("*"):
+                        if path.is_file():
+                            archive.write(path, prefix + path.relative_to(self.root).as_posix())
+                with Session(archive_path) as session:
+                    self.assertEqual(session.validate()["frames"], 1)
+                    self.assertEqual(session.frame(0).features()[1][0], 2**63 + 123)
+                    np.testing.assert_equal(session.frame(0).depth(), [[2, 2], [np.nan, 0]])
+
+    def test_compressed_capture_keeps_empty_feature_buffers_raw(self):
+        path = self.root / "frames/00000000/metadata.json"
+        meta = json.loads(path.read_text())
+        meta["features"]["count"] = 0
+        for key in ("xyz", "ids"):
+            (path.parent / meta["features"][key]).write_bytes(b"")
+        path.write_text(json.dumps(meta))
+        compress_capture(self.root, "up")
+        with Session(self.root) as session:
+            xyz, ids = session.frame(0).features()
+            self.assertEqual(xyz.shape, (0, 3))
+            self.assertEqual(ids.shape, (0,))
+            self.assertEqual(session.validate()["frames"], 1)
+
+    def test_compressed_plane_requires_explicit_storage_fields(self):
+        compress_capture(self.root, "up")
+        path = self.root / "frames/00000000/metadata.json"
+        original = path.read_text()
+        for field in ("encoding", "predictor", "storedByteCount"):
+            with self.subTest(field=field):
+                meta = json.loads(original)
+                del meta["depth"]["planes"][0][field]
+                path.write_text(json.dumps(meta))
+                with Session(self.root) as session:
+                    with self.assertRaisesRegex(ValueError, "Missing compressed plane fields.*" + field):
+                        session.frame(0).depth()
+
+    def test_compressed_plane_rejects_unknown_storage_fields(self):
+        compress_capture(self.root, "up")
+        path = self.root / "frames/00000000/metadata.json"
+        original = path.read_text()
+        for field, value, message in (("encoding", "gzip", "encoding"),
+                                      ("predictor", "previous-frame", "predictor"),
+                                      ("storedByteCount", -1, "positive integer"),
+                                      ("storedByteCount", True, "positive integer"),
+                                      ("storedByteCount", 1000, "stored byte length")):
+            with self.subTest(field=field, value=value):
+                meta = json.loads(original)
+                meta["depth"]["planes"][0][field] = value
+                path.write_text(json.dumps(meta))
+                with Session(self.root) as session:
+                    with self.assertRaisesRegex(ValueError, message):
+                        session.frame(0).depth()
+
+    def test_compressed_plane_validates_layout_before_decoding(self):
+        compress_capture(self.root, "up")
+        path = self.root / "frames/00000000/metadata.json"
+        original = path.read_text()
+        meta = json.loads(original)
+        (path.parent / meta["depth"]["planes"][0]["file"]).write_bytes(b"not zlib")
+        for field, value in (("width", 0), ("height", -1), ("rowBytes", 7),
+                             ("byteCount", 15), ("bytesPerPixel", 3), ("height", True)):
+            with self.subTest(field=field, value=value):
+                meta = json.loads(original)
+                meta["depth"]["planes"][0][field] = value
+                path.write_text(json.dumps(meta))
+                with Session(self.root) as session:
+                    with self.assertRaisesRegex(ValueError, "packed plane layout"):
+                        session.frame(0).depth()
+
+    def test_compressed_plane_rejects_malformed_zlib_streams(self):
+        compress_capture(self.root, "up")
+        path = self.root / "frames/00000000/metadata.json"
+        meta = json.loads(path.read_text())
+        plane = meta["depth"]["planes"][0]
+        target = path.parent / plane["file"]
+        good = target.read_bytes()
+        decoded = zlib.decompress(good)
+        corrupt_checksum = good[:-1] + bytes([good[-1] ^ 1])
+        cases = {
+            "checksum": corrupt_checksum,
+            "truncated trailer": good[:-1],
+            "truncated payload": good[:len(good)//2],
+            "trailing junk": good + b"junk",
+            "concatenated stream": good + good,
+            "short decoded payload": zlib.compress(decoded[:-1]),
+            "oversized decoded payload": zlib.compress(decoded + b"x" * 2_000_000),
+            "raw deflate without zlib wrapper": good[2:-4],
+        }
+        for name, data in cases.items():
+            with self.subTest(case=name):
+                target.write_bytes(data)
+                plane["storedByteCount"] = len(data)
+                path.write_text(json.dumps(meta))
+                with Session(self.root) as session:
+                    with self.assertRaisesRegex(ValueError, "zlib|decoded byte length"):
+                        session.frame(0).depth()
+
+    def test_schema_one_does_not_decode_compressed_metadata(self):
+        compress_capture(self.root, "up")
+        path = self.root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["schema"] = "raw-lidar/1"
+        path.write_text(json.dumps(manifest))
+        with Session(self.root) as session:
+            with self.assertRaisesRegex(ValueError, "requires raw-lidar/2"):
+                session.frame(0).depth()
+
+    def test_unknown_schema_is_rejected(self):
+        path = self.root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["schema"] = "raw-lidar/3"
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "Unsupported capture schema"):
+            Session(self.root)
 
 
 if __name__ == "__main__":

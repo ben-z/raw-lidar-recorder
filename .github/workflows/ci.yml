@@ -26,11 +26,11 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -version
-          xcodebuild -project RawLiDAR.xcodeproj -scheme RawLiDAR \
+          xcodebuild -project RawLiDAR.xcodeproj -scheme RawLiDAR -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/RawLiDAR-build" \
             CODE_SIGNING_ALLOWED=NO build
-      - name: Test production JSON helpers and ZIP exporter
+      - name: Test production JSON, lossless compression, and ZIP export
         run: |
-          swiftc RawLiDAR/CaptureFormat.swift RawLiDAR/ArchiveExporter.swift \
+          swiftc RawLiDAR/CaptureFormat.swift RawLiDAR/BufferCompression.swift RawLiDAR/ArchiveExporter.swift \
             tests/swift/main.swift -o "$RUNNER_TEMP/export-tests"
           "$RUNNER_TEMP/export-tests"

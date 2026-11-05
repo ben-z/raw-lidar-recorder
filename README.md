@@ -23,20 +23,20 @@ is source code, not a signed IPA, TestFlight build, or App Store installation.
 ## Use
 
 - Tap **Record**, move the phone, then tap **Stop**.
-- Tap **Export latest**, then AirDrop the ZIP or choose **Save to Files**.
 - The folder button lists previous recordings.
 - Tap a recording to see its date, duration, size, frame count and recorded sensor
   information, including GPS coordinates, fix time and reported accuracy when available.
 - Swipe a recording or open its details to export or delete it. Deletion asks for
   confirmation and permanently removes that recording and its cached export from
   the phone. Copies saved elsewhere are kept.
+- When exporting, AirDrop the ZIP or choose **Save to Files**.
 - During recording, the capture screen shows the latest GPS coordinates, reported
   accuracy and fix time; the last fix remains visible after stopping.
 - Originals are also visible in **Files → On My iPhone → Raw LiDAR → Recordings**
   and through Finder file sharing. Copy a session directly for very large captures.
 - The app stops recording when it leaves the foreground, is interrupted, or runs
   low on storage. Start a new session when you return.
-- To reclaim storage, delete copied recordings from Files. Export ZIP copies in
+- To reclaim storage, delete recordings from the app or Files. Export ZIP copies in
   the app's temporary storage are replaced on the next export; iOS may also
   clear temporary files.
 

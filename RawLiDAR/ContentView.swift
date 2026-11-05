@@ -63,13 +63,6 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent).tint(.red)
                         .disabled(!recorder.supported || (recorder.busy && recorder.phase != .recording))
-                        Button {
-                            if let url = recorder.recordings.first { export(url) }
-                        } label: {
-                            Label("Export latest", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity).padding(12)
-                        }
-                        .buttonStyle(.bordered).disabled(recorder.busy || recorder.recordings.isEmpty)
                         Text("Lossless RGB · depth · confidence · pose · IMU")
                             .font(.caption).foregroundStyle(.white.opacity(0.75))
                     }

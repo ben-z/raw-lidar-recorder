@@ -178,11 +178,12 @@ index recovery. All 13 tests pass in the authoring environment. Run
 The included GitHub Actions workflow runs these tests and an unsigned iOS build
 on macOS. It also compiles the production JSON helpers and ZIP exporter into a
 small integration test, with Python independently checking the ZIP payloads.
-Those macOS checks still need to run; adding a workflow is not a passing build.
+The first [CI run](https://github.com/ben-z/raw-lidar-recorder/actions/runs/41979132276)
+passed with Xcode 26.6: the unsigned iOS target built successfully, the production
+JSON/ZIP integration checks passed, and all 13 Python tests passed.
 
-The source was authored in a Linux environment without Xcode or an iOS device.
-The iOS target has **not been compiled, signed or device-tested here**. Before
-using important data, build on your Mac and validate a short device recording:
+The app has **not been signed or tested on a physical iPhone/iPad**. Before using
+important data, install it on your device and validate a short recording:
 
 1. Confirm depth/confidence files exist and `--validate` passes.
 2. Point at a flat wall; compare depth to a known distance and inspect the PLY.

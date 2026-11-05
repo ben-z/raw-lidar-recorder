@@ -115,3 +115,173 @@ do { _ = try ArchiveExporter.create(from: root.appendingPathComponent("missing")
 catch { rejected = true }
 try require(rejected, "Missing source unexpectedly exported")
 print("Swift JSON, byte-exact compression, and real ZIP export checks passed")
+
+func writeFixture(_ object: [String: Any], to url: URL) throws {
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+}
+
+func rejects(_ message: String, _ operation: () throws -> Void) throws {
+    var failed = false
+    do { try operation() } catch { failed = true }
+    try require(failed, message)
+}
+
+let infoRoot = root.appendingPathComponent("recording-info", isDirectory: true)
+try manager.createDirectory(at: infoRoot, withIntermediateDirectories: true)
+var infoManifest: [String: Any] = [
+    "schema": "raw-lidar/2", "state": "complete", "createdUTC": "2026-01-02T03:04:05Z",
+    "finishedUTC": "2026-01-02T03:04:15Z", "frameCount": 300, "durationSeconds": 10.0,
+    "payloadBytes": Int64(5_000_000_000), "videoFormat": ["width": 1280, "height": 720, "fps": 30],
+    "firstFrameTimestamp": 100.0, "lastFrameTimestamp": 110.0, "requestedMotionHz": 100.0,
+    "context": ["file": "context.jsonl"],
+]
+let infoManifestURL = infoRoot.appendingPathComponent("manifest.json")
+try writeFixture(infoManifest, to: infoManifestURL)
+func locationFixture(timestamp: Double, latitude: Double) -> [String: Any] {
+    ["sensor": "location", "timestamp": timestamp, "timestampUnix": 1_000_000 + timestamp,
+     "receivedTimestamp": 130.0, "latitudeDegrees": latitude, "longitudeDegrees": -122.0,
+     "horizontalAccuracyMeters": 4.5, "altitudeMeters": 20.0, "verticalAccuracyMeters": 6.0,
+     "ellipsoidalAltitudeMeters": -10.0, "speedMetersPerSecond": -1.0, "courseDegrees": -1.0]
+}
+func journal(_ records: [[String: Any]]) throws -> Data {
+    var data = Data()
+    for record in records { data.append(try jsonData(record)); data.append(0x0a) }
+    return data
+}
+let deviceRecord: [String: Any] = [
+    "sensor": "deviceState", "timestamp": 125.0, "batteryLevel": 0.75, "batteryState": 1,
+    "thermalState": 1, "lowPowerMode": false, "deviceOrientation": 1,
+]
+var contextRecords: [[String: Any]] = [
+    locationFixture(timestamp: 101, latitude: 37.1),
+    locationFixture(timestamp: 120, latitude: 37.2),
+    locationFixture(timestamp: 90, latitude: 37.3), // An older cached fix delivered last.
+    deviceRecord,
+]
+for i in 0..<2000 {
+    contextRecords.append(["sensor": "heading", "timestamp": 100.0 + Double(i),
+                           "timestampUnix": 1_000_100.0 + Double(i), "magneticHeadingDegrees": 123.0,
+                           "trueHeadingDegrees": -1.0, "headingAccuracyDegrees": 12.0])
+}
+try journal(contextRecords).write(to: infoRoot.appendingPathComponent("context.jsonl"))
+try journal([
+    ["sensor": "accelerometer", "timestamp": 100.0, "g": [0.0, 0.0, -1.0]],
+    ["sensor": "barometer", "timestamp": 122.0, "pressure_kPa": 101.3, "relativeAltitude_m": 0.4],
+    ["sensor": "absoluteAltitude", "timestamp": 123.0, "altitude_m": 25.0, "accuracy_m": 8.0,
+     "precision_m": 0.5, "timestampBasis": "receipt", "sourceTimestamp": 815_000_000.0,
+     "sourceTimestampClock": "API source clock"],
+]).write(to: infoRoot.appendingPathComponent("motion.jsonl"))
+try journal([
+    ["event": "sensorError", "sensor": "location", "timestamp": 126.0, "error": "Location access denied"],
+]).write(to: infoRoot.appendingPathComponent("events.jsonl"))
+let info = try RecordingInfo.load(from: infoRoot)
+try require(info.manifest.payloadBytes == 5_000_000_000, "Manifest payload bytes lost Int64 precision")
+try require(info.manifest.createdAt == ISO8601DateFormatter().date(from: "2026-01-02T03:04:05Z"), "Recording date is incorrect")
+try require(info.manifest.videoFormat.width == 1280 && info.manifest.videoFormat.fps == 30, "Camera format was lost")
+try require(info.location?.latitudeDegrees == 37.2, "Cached older GPS replaced the newest acquisition")
+try require(info.location?.ageAtReceiptSeconds == 10.0, "GPS acquisition-to-receipt age was lost")
+try require(info.location?.speedMetersPerSecond == -1 && info.location?.courseDegrees == -1, "Invalid GPS sentinels were silently changed")
+try require(info.heading?.timestamp == 2099.0 && info.heading?.trueHeadingDegrees == -1, "Streamed latest heading is incorrect")
+try require(info.deviceState?.batteryLevel == 0.75 && info.deviceState?.thermalState == 1, "Device state was lost")
+try require(info.barometer?.relativeAltitudeMeters == 0.4, "Barometer was lost")
+try require(info.absoluteAltitude?.timestampBasis == "receipt" && info.absoluteAltitude?.sourceTimestamp == 815_000_000.0, "Absolute-altimeter clock provenance was lost")
+try require(info.sensorErrorCount == 1 && info.lastSensorError == "location: Location access denied", "Acquisition error was hidden")
+
+// The manifest remains readable without opening any binary or journal payload.
+try manager.removeItem(at: infoRoot.appendingPathComponent("motion.jsonl"))
+let manifestOnly = try RecordingInfo.loadManifest(from: infoRoot)
+try require(manifestOnly.frameCount == 300, "Lightweight manifest read required payloads")
+try rejects("Missing motion journal was accepted") { _ = try RecordingInfo.load(from: infoRoot) }
+try Data().write(to: infoRoot.appendingPathComponent("motion.jsonl"))
+try manager.removeItem(at: infoRoot.appendingPathComponent("context.jsonl"))
+try rejects("Declared but missing context journal was accepted") { _ = try RecordingInfo.load(from: infoRoot) }
+try Data("{\"sensor\":\"location\",\"timestamp\":123}\n".utf8).write(to: infoRoot.appendingPathComponent("context.jsonl"))
+try rejects("Malformed location record was accepted") { _ = try RecordingInfo.load(from: infoRoot) }
+try Data("{\"sensor\":\"location\",\"timestamp\":123}".utf8).write(to: infoRoot.appendingPathComponent("context.jsonl"))
+try rejects("Incomplete final journal record was accepted") { _ = try RecordingInfo.load(from: infoRoot) }
+try Data(repeating: 0x20, count: 1_000_000).write(to: infoRoot.appendingPathComponent("context.jsonl"))
+var oversizedRecordError: String?
+do { _ = try RecordingInfo.load(from: infoRoot) }
+catch { oversizedRecordError = error.localizedDescription }
+try require(oversizedRecordError?.contains("too large") == true, "Oversized sensor record did not fail at the memory bound")
+infoManifest["context"] = ["file": "../outside.jsonl"]
+try writeFixture(infoManifest, to: infoManifestURL)
+try rejects("Context journal escaped the recording directory") { _ = try RecordingInfo.loadManifest(from: infoRoot) }
+
+infoManifest.removeValue(forKey: "context")
+infoManifest["schema"] = "raw-lidar/1"
+try writeFixture(infoManifest, to: infoManifestURL)
+let legacyInfo = try RecordingInfo.load(from: infoRoot)
+try require(legacyInfo.location == nil && legacyInfo.heading == nil && legacyInfo.absoluteAltitude == nil, "Legacy recording invented absent sensor values")
+infoManifest["state"] = "recording"
+for key in ["finishedUTC", "frameCount", "durationSeconds", "payloadBytes"] { infoManifest.removeValue(forKey: key) }
+try writeFixture(infoManifest, to: infoManifestURL)
+let unfinished = try RecordingInfo.loadManifest(from: infoRoot)
+try require(unfinished.frameCount == nil && unfinished.payloadBytes == nil && unfinished.finishedAt == nil, "Unfinished recording invented final totals")
+infoManifest["payloadBytes"] = -1
+try writeFixture(infoManifest, to: infoManifestURL)
+try rejects("Invalid manifest totals were accepted") { _ = try RecordingInfo.loadManifest(from: infoRoot) }
+
+let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+try manager.createDirectory(at: libraryRoot, withIntermediateDirectories: true)
+func libraryRecording(_ name: String, under parent: URL) throws -> URL {
+    let directory = parent.appendingPathComponent(name, isDirectory: true)
+    try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: directory.appendingPathComponent("manifest.json"))
+    return directory
+}
+let alpha = try libraryRecording("alpha", under: libraryRoot)
+let zeta = try libraryRecording("zeta", under: libraryRoot)
+let outside = try libraryRecording("outside", under: root)
+let nested = try libraryRecording("nested", under: zeta)
+let partial = libraryRoot.appendingPathComponent("partial", isDirectory: true)
+try manager.createDirectory(at: partial, withIntermediateDirectories: true)
+try Data("Keep other scans".utf8).write(to: zeta.appendingPathComponent("payload.bin"))
+let directoryLink = libraryRoot.appendingPathComponent("linked", isDirectory: true)
+try manager.createSymbolicLink(at: directoryLink, withDestinationURL: outside)
+let badManifest = libraryRoot.appendingPathComponent("symlink-manifest", isDirectory: true)
+try manager.createDirectory(at: badManifest, withIntermediateDirectories: true)
+try manager.createSymbolicLink(at: badManifest.appendingPathComponent("manifest.json"), withDestinationURL: outside.appendingPathComponent("manifest.json"))
+let manifestDirectory = libraryRoot.appendingPathComponent("manifest-directory", isDirectory: true)
+try manager.createDirectory(at: manifestDirectory.appendingPathComponent("manifest.json", isDirectory: true), withIntermediateDirectories: true)
+try Data("Not a recording".utf8).write(to: libraryRoot.appendingPathComponent("notes.txt"))
+try manager.createDirectory(at: libraryRoot.appendingPathComponent(".hidden", isDirectory: true), withIntermediateDirectories: true)
+let listed = try RecordingLibrary.recordings(in: libraryRoot)
+try require(listed.map(\.lastPathComponent) == ["zeta", "symlink-manifest", "partial", "manifest-directory", "alpha"], "Library hid an interrupted recording, included files/symlink directories, or sorted incorrectly")
+for target in [libraryRoot, outside, nested, directoryLink] {
+    try rejects("Delete accepted a root, external, nested or symlink target") { try RecordingLibrary.delete(target, in: libraryRoot) }
+}
+let dotPath = URL(string: libraryRoot.absoluteString + "zeta/../zeta/")!
+try rejects("Delete accepted a dot-segment path") { try RecordingLibrary.delete(dotPath, in: libraryRoot) }
+try require(manager.fileExists(atPath: outside.appendingPathComponent("manifest.json").path), "Rejected delete modified an external recording")
+try RecordingLibrary.delete(alpha, in: libraryRoot)
+try require(!manager.fileExists(atPath: alpha.path), "Selected recording was not deleted")
+let otherPayload = try Data(contentsOf: zeta.appendingPathComponent("payload.bin"))
+try require(otherPayload == Data("Keep other scans".utf8), "Deleting one recording modified another")
+try RecordingLibrary.delete(partial, in: libraryRoot)
+try require(!manager.fileExists(atPath: partial.path), "Partially removed recording could not be cleaned up")
+try RecordingLibrary.delete(badManifest, in: libraryRoot)
+try require(manager.fileExists(atPath: outside.appendingPathComponent("manifest.json").path), "Deleting a recording followed a contained symbolic link")
+try rejects("Missing recording deletion silently succeeded") { try RecordingLibrary.delete(alpha, in: libraryRoot) }
+print("Recording metadata streaming and recording-library deletion checks passed")
+
+// Cached exports from earlier app processes must not outlive source deletion.
+let cacheRoot = root.appendingPathComponent("export-cache", isDirectory: true)
+try manager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+let matchingCache = cacheRoot.appendingPathComponent("RawLiDAR-Export-old-process", isDirectory: true)
+let unrelatedCache = cacheRoot.appendingPathComponent("RawLiDAR-Export-other-scan", isDirectory: true)
+let ordinaryCache = cacheRoot.appendingPathComponent("another-cache", isDirectory: true)
+for folder in [matchingCache, unrelatedCache, ordinaryCache] {
+    try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+}
+try Data([1]).write(to: matchingCache.appendingPathComponent("selected.zip"))
+try Data([2]).write(to: unrelatedCache.appendingPathComponent("other.zip"))
+try Data([3]).write(to: ordinaryCache.appendingPathComponent("selected.zip"))
+let linkedCache = cacheRoot.appendingPathComponent("RawLiDAR-Export-symlink")
+try manager.createSymbolicLink(at: linkedCache, withDestinationURL: ordinaryCache)
+try ArchiveExporter.removeCachedExports(for: URL(fileURLWithPath: "/Recordings/selected"), in: cacheRoot)
+try require(!manager.fileExists(atPath: matchingCache.path), "Selected scan's old cached export was retained")
+try require(manager.fileExists(atPath: unrelatedCache.path), "Another scan's export was deleted")
+try require(manager.fileExists(atPath: ordinaryCache.path), "An unrelated cache was deleted")
+try require(manager.fileExists(atPath: linkedCache.path), "Cached-export cleanup followed a symbolic link")
+print("Cached export cleanup checks passed")

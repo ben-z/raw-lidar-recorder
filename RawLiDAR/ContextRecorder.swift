@@ -5,6 +5,7 @@ import UIKit
 /// Main-run-loop location callbacks and device notifications feed the capture queue.
 @MainActor
 final class ContextRecorder: NSObject, @preconcurrency CLLocationManagerDelegate {
+    var onLocation: ((CLLocation) -> Void)?
     private var manager = CLLocationManager()
     private var emit: (([String: Any]) -> Void)?
     private var observers: [NSObjectProtocol] = []
@@ -113,6 +114,7 @@ final class ContextRecorder: NSObject, @preconcurrency CLLocationManagerDelegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard manager === self.manager, emit != nil else { return }
         for location in locations {
+            onLocation?(location)
             let unix = location.timestamp.timeIntervalSince1970
             var record: [String: Any] = [
                 "sensor": "location", "timestamp": unix - unixTimeAtBoot, "timestampUnix": unix,

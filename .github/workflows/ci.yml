@@ -29,8 +29,9 @@ jobs:
           xcodebuild -project RawLiDAR.xcodeproj -scheme RawLiDAR -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/RawLiDAR-build" \
             CODE_SIGNING_ALLOWED=NO build
-      - name: Test production JSON, lossless compression, and ZIP export
+      - name: Test production metadata, recording deletion, compression, and ZIP export
         run: |
           swiftc RawLiDAR/CaptureFormat.swift RawLiDAR/BufferCompression.swift RawLiDAR/ArchiveExporter.swift \
+            RawLiDAR/RecordingInfo.swift RawLiDAR/RecordingLibrary.swift \
             tests/swift/main.swift -o "$RUNNER_TEMP/export-tests"
           "$RUNNER_TEMP/export-tests"

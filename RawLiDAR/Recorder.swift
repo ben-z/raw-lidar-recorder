@@ -1,17 +1,19 @@
 import ARKit
 import AVFoundation
 import Combine
+import CoreLocation
 import UIKit
 
 /// Owns UI state. CaptureEngine owns sensor and disk work on its serial queue.
 @MainActor
 final class Recorder: ObservableObject {
-    enum Phase { case idle, starting, recording, stopping, exporting }
+    enum Phase { case idle, starting, recording, stopping, exporting, deleting }
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var status = "Ready. Record a short test first."
     @Published private(set) var stats = CaptureStats()
     @Published private(set) var recordings: [URL] = []
+    @Published private(set) var location: CLLocation?
 
     let supported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
     var session: ARSession { engine.session }
@@ -19,7 +21,7 @@ final class Recorder: ObservableObject {
 
     private let engine = CaptureEngine()
     private let context = ContextRecorder()
-    private let exportQueue = DispatchQueue(label: "raw-lidar.export", qos: .utility)
+    private let fileQueue = DispatchQueue(label: "raw-lidar.files", qos: .utility)
     private var captureID: UUID?
     private var engineStarted = false
     private var previewRequest: UUID?
@@ -35,6 +37,11 @@ final class Recorder: ObservableObject {
     init() {
         engine.onEvent = { [weak self] event in
             DispatchQueue.main.async { self?.receive(event) }
+        }
+        context.onLocation = { [weak self] location in
+            guard let self else { return }
+            if let current = self.location, current.timestamp >= location.timestamp { return }
+            self.location = location
         }
         if !supported { status = "Requires an iPhone or iPad with a rear LiDAR scanner." }
         reloadRecordings()
@@ -86,6 +93,7 @@ final class Recorder: ObservableObject {
                 return
             }
             self.stats = CaptureStats()
+            self.location = nil
             self.engineStarted = true
             UIApplication.shared.isIdleTimerDisabled = true
             self.engine.start(id: id, root: self.root, contextInformation: self.context.information)
@@ -125,7 +133,7 @@ final class Recorder: ObservableObject {
         // The preceding share UI has closed before another export can start.
         if let exportedURL { ArchiveExporter.remove(exportedURL) }
         exportedURL = nil
-        exportQueue.async {
+        fileQueue.async {
             let result = Result { try ArchiveExporter.create(from: directory) }
             DispatchQueue.main.async {
                 self.phase = .idle
@@ -140,6 +148,66 @@ final class Recorder: ObservableObject {
                 completion(result)
             }
         }
+    }
+
+    func info(for directory: URL) async throws -> RecordingInfo {
+        guard recordings.contains(directory) else { throw CaptureError.message("Recording is no longer in the library.") }
+        return try await withCheckedThrowingContinuation { continuation in
+            fileQueue.async {
+                continuation.resume(with: Result { try RecordingInfo.load(from: directory) })
+            }
+        }
+    }
+
+    func manifest(for directory: URL) async throws -> RecordingInfo.Manifest {
+        guard recordings.contains(directory) else { throw CaptureError.message("Recording is no longer in the library.") }
+        return try await withCheckedThrowingContinuation { continuation in
+            fileQueue.async {
+                continuation.resume(with: Result { try RecordingInfo.loadManifest(from: directory) })
+            }
+        }
+    }
+
+    func delete(_ directory: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard phase == .idle, recordings.contains(directory) else {
+            completion(.failure(CaptureError.message("Finish the current operation before deleting a recording.")))
+            return
+        }
+        let root = self.root
+        let temporaryRoot = FileManager.default.temporaryDirectory
+        let cachedExport = exportedURL.flatMap { $0.lastPathComponent == directory.lastPathComponent + ".zip" ? $0 : nil }
+        phase = .deleting
+        status = "Deleting recording…"
+        UIApplication.shared.isIdleTimerDisabled = true
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Delete recording")
+        fileQueue.async {
+            let result = Result {
+                try ArchiveExporter.removeCachedExports(for: directory, in: temporaryRoot)
+                try RecordingLibrary.delete(directory, in: root)
+            }
+            DispatchQueue.main.async {
+                self.phase = .idle
+                UIApplication.shared.isIdleTimerDisabled = false
+                if self.backgroundTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(self.backgroundTask)
+                    self.backgroundTask = .invalid
+                }
+                switch result {
+                case .success:
+                    if cachedExport != nil { self.exportedURL = nil }
+                    self.reloadRecordings()
+                    self.status = "Recording deleted."
+                case .failure(let error):
+                    self.status = "Delete failed: \(error.localizedDescription)"
+                }
+                completion(result)
+            }
+        }
+    }
+
+    func refreshRecordings() {
+        guard phase == .idle else { return }
+        reloadRecordings()
     }
 
     private func receive(_ event: CaptureEngine.Event) {
@@ -186,10 +254,7 @@ final class Recorder: ObservableObject {
     }
 
     private func reloadRecordings() {
-        let files = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        recordings = files.filter {
-            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-                && FileManager.default.fileExists(atPath: $0.appendingPathComponent("manifest.json").path)
-        }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+        do { recordings = try RecordingLibrary.recordings(in: root) }
+        catch { status = "Cannot read recordings: \(error.localizedDescription)" }
     }
 }

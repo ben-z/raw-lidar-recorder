@@ -1,7 +1,8 @@
 # Raw LiDAR Recorder
 
-A minimal, local-only iOS recorder: **Record → Stop → Export ZIP**.
-No account, backend, cloud SDK, or third-party iOS dependencies.
+A minimal iOS recorder: **Record → Stop → Export ZIP**.
+Recordings stay in app storage until exported. No account, app backend, or
+third-party iOS dependencies. Native Apple Maps displays saved GPS fixes.
 
 ## Install on your iPhone
 
@@ -25,7 +26,8 @@ is source code, not a signed IPA, TestFlight build, or App Store installation.
 - Tap **Record**, move the phone, then tap **Stop**.
 - The folder button lists previous recordings.
 - Tap a recording to see its date, duration, size, frame count and recorded sensor
-  information, including GPS coordinates, fix time and reported accuracy when available.
+  information, including a map of the GPS fix, coordinates, fix time and reported
+  accuracy when available.
 - Swipe a recording or open its details to export or delete it. Deletion asks for
   confirmation and permanently removes that recording and its cached export from
   the phone. Copies saved elsewhere are kept.

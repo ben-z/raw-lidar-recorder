@@ -28,6 +28,8 @@ final class Recorder: ObservableObject {
     private var foreground = true
     private var exportedURL: URL?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var infoResults: [URL: Result<RecordingInfo, Error>] = [:]
+    private var infoTasks: [URL: Task<Result<RecordingInfo, Error>, Never>] = [:]
 
     private var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -150,13 +152,38 @@ final class Recorder: ObservableObject {
         }
     }
 
-    func info(for directory: URL) async throws -> RecordingInfo {
-        guard recordings.contains(directory) else { throw CaptureError.message("Recording is no longer in the library.") }
-        return try await withCheckedThrowingContinuation { continuation in
-            fileQueue.async {
-                continuation.resume(with: Result { try RecordingInfo.load(from: directory) })
-            }
+    func prepareInfo(for directory: URL) async -> Result<RecordingInfo, Error> {
+        guard recordings.contains(directory) else {
+            return .failure(CaptureError.message("Recording is no longer in the library."))
         }
+        if let result = infoResults[directory] { return result }
+        if let task = infoTasks[directory] { return await task.value }
+        let task = Task<Result<RecordingInfo, Error>, Never> { [fileQueue] in
+            let result: Result<RecordingInfo, Error> = await withCheckedContinuation { continuation in
+                fileQueue.async {
+                    continuation.resume(returning: Result { try RecordingInfo.load(from: directory) })
+                }
+            }
+            guard self.recordings.contains(directory) else {
+                self.infoTasks[directory] = nil
+                return .failure(CaptureError.message("Recording is no longer in the library."))
+            }
+            self.infoResults[directory] = result
+            self.infoTasks[directory] = nil
+            return result
+        }
+        infoTasks[directory] = task
+        return await task.value
+    }
+
+    func preparedInfo(for directory: URL) -> Result<RecordingInfo, Error> {
+        guard recordings.contains(directory) else {
+            return .failure(CaptureError.message("Recording is no longer in the library."))
+        }
+        guard let result = infoResults[directory] else {
+            preconditionFailure("Prepare recording information before opening its detail view.")
+        }
+        return result
     }
 
     func manifest(for directory: URL) async throws -> RecordingInfo.Manifest {
@@ -195,6 +222,8 @@ final class Recorder: ObservableObject {
                 switch result {
                 case .success:
                     if cachedExport != nil { self.exportedURL = nil }
+                    self.infoResults[directory] = nil
+                    self.infoTasks[directory] = nil
                     self.reloadRecordings()
                     self.status = "Recording deleted."
                 case .failure(let error):
@@ -254,7 +283,12 @@ final class Recorder: ObservableObject {
     }
 
     private func reloadRecordings() {
-        do { recordings = try RecordingLibrary.recordings(in: root) }
+        do {
+            recordings = try RecordingLibrary.recordings(in: root)
+            let existing = Set(recordings)
+            infoResults = infoResults.filter { existing.contains($0.key) }
+            infoTasks = infoTasks.filter { existing.contains($0.key) }
+        }
         catch { status = "Cannot read recordings: \(error.localizedDescription)" }
     }
 }

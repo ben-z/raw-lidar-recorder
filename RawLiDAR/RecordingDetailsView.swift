@@ -1,17 +1,25 @@
+import MapKit
 import SwiftUI
 
 struct RecordingDetailsView: View {
     @ObservedObject var recorder: Recorder
     let directory: URL
+    let result: Result<RecordingInfo, Error>
     let export: (URL) -> Void
     let delete: (URL) -> Void
 
-    @State private var info: RecordingInfo?
-    @State private var loadError: String?
+    private struct MapConfiguration {
+        // Keep nearby streets visible even when the reported uncertainty is small.
+        let minimumSpanMeters: CLLocationDistance = 300
+        // Fit the uncertainty circle with space around it.
+        let accuracySpanMultiplier: Double = 4
+        let height: CGFloat = 220
+    }
 
     var body: some View {
         Form {
-            if let info {
+            switch result {
+            case .success(let info):
                 recordingSection(info.manifest)
                 locationSection(info)
                 headingSection(info)
@@ -25,14 +33,12 @@ struct RecordingDetailsView: View {
                         }
                     }
                 }
-            } else if let loadError {
+            case .failure(let error):
                 Section {
                     Label("Couldn’t read recording", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
-                    Text(loadError).textSelection(.enabled)
+                    Text(error.localizedDescription).textSelection(.enabled)
                 }
-            } else {
-                Section { ProgressView("Loading recording…") }
             }
 
             Section {
@@ -53,18 +59,6 @@ struct RecordingDetailsView: View {
         }
         .navigationTitle("Recording")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: directory) {
-            info = nil
-            loadError = nil
-            do {
-                let loaded = try await recorder.info(for: directory)
-                guard !Task.isCancelled else { return }
-                info = loaded
-            } catch {
-                guard !Task.isCancelled else { return }
-                loadError = error.localizedDescription
-            }
-        }
     }
 
     private func recordingSection(_ manifest: RecordingInfo.Manifest) -> some View {
@@ -96,10 +90,17 @@ struct RecordingDetailsView: View {
     private func locationSection(_ info: RecordingInfo) -> some View {
         Section {
             if let location = info.location {
-                LabeledContent("Latitude") {
+                let validFix = location.horizontalAccuracyMeters >= 0
+                if validFix {
+                    locationMap(location)
+                } else {
+                    Text("The recorded GPS fix is invalid.")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent(validFix ? "Latitude" : "Raw latitude") {
                     Text(coordinate(location.latitudeDegrees)).monospacedDigit().textSelection(.enabled)
                 }
-                LabeledContent("Longitude") {
+                LabeledContent(validFix ? "Longitude" : "Raw longitude") {
                     Text(coordinate(location.longitudeDegrees)).monospacedDigit().textSelection(.enabled)
                 }
                 LabeledContent("Reported accuracy", value: accuracy(location.horizontalAccuracyMeters, unit: "m"))
@@ -130,6 +131,28 @@ struct RecordingDetailsView: View {
         } footer: {
             Text("Coordinates are the phone’s location estimate. Reported accuracy describes its uncertainty.")
         }
+    }
+
+    private func locationMap(_ location: RecordingInfo.Location) -> some View {
+        let configuration = MapConfiguration()
+        let coordinate = CLLocationCoordinate2D(latitude: location.latitudeDegrees,
+                                              longitude: location.longitudeDegrees)
+        let span = max(configuration.minimumSpanMeters,
+                       location.horizontalAccuracyMeters * configuration.accuracySpanMultiplier)
+        let region = MKCoordinateRegion(center: coordinate, latitudinalMeters: span, longitudinalMeters: span)
+        return Map(initialPosition: .region(region), interactionModes: [.pan, .zoom]) {
+            if location.horizontalAccuracyMeters >= 0 {
+                MapCircle(center: coordinate, radius: location.horizontalAccuracyMeters)
+                    .foregroundStyle(.blue.opacity(0.15))
+                    .stroke(.blue.opacity(0.7), lineWidth: 1)
+            }
+            Marker("Recording", coordinate: coordinate)
+        }
+        .mapStyle(.standard)
+        .mapControls { MapScaleView(anchorEdge: .leading) }
+        .frame(height: configuration.height)
+        .accessibilityLabel("Saved recording location")
+        .accessibilityHint("Pan or zoom to inspect the saved location.")
     }
 
     private func headingSection(_ info: RecordingInfo) -> some View {

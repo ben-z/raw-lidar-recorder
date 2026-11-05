@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var shareItem: ExportItem?
     @State private var recordingsPath: [URL] = []
     @State private var recordingAlert: RecordingAlert?
+    @State private var openingRecording: URL?
 
     var body: some View {
         ZStack {
@@ -81,9 +82,17 @@ struct ContentView: View {
         .sheet(isPresented: $showSessions, onDismiss: exportPendingRecording) {
             NavigationStack(path: $recordingsPath) {
                 List(recorder.recordings, id: \.self) { url in
-                    NavigationLink(value: url) {
-                        RecordingRow(recorder: recorder, directory: url)
+                    Button { openingRecording = url } label: {
+                        HStack {
+                            RecordingRow(recorder: recorder, directory: url)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) { recordingAlert = .delete(url) } label: {
                             Label("Delete", systemImage: "trash")
@@ -92,14 +101,14 @@ struct ContentView: View {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }.tint(.blue)
                     }
-                    .disabled(recorder.busy)
+                    .disabled(recorder.busy || openingRecording != nil)
                 }
                 .overlay {
                     if recorder.recordings.isEmpty { Text("No recordings yet.").foregroundStyle(.secondary) }
                 }
                 .navigationTitle("Recordings")
                 .navigationDestination(for: URL.self) { url in
-                    RecordingDetailsView(recorder: recorder, directory: url,
+                    RecordingDetailsView(recorder: recorder, directory: url, result: recorder.preparedInfo(for: url),
                                          export: selectExport, delete: { recordingAlert = .delete($0) })
                 }
                 .toolbar {
@@ -111,6 +120,14 @@ struct ContentView: View {
                     }
                 }
                 .onAppear { recorder.refreshRecordings() }
+                .onDisappear { openingRecording = nil }
+                .task(id: openingRecording) {
+                    guard let url = openingRecording else { return }
+                    _ = await recorder.prepareInfo(for: url)
+                    guard !Task.isCancelled else { return }
+                    recordingsPath.append(url)
+                    openingRecording = nil
+                }
                 .interactiveDismissDisabled(recorder.busy)
                 .alert(item: $recordingAlert) { alert in
                     switch alert {
@@ -194,7 +211,7 @@ private struct RecordingRow: View {
                 Text(directory.lastPathComponent).font(.subheadline.monospaced())
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(.red)
-                } else { ProgressView("Reading details…") }
+                }
             }
         }
         .task(id: directory) {
@@ -202,6 +219,7 @@ private struct RecordingRow: View {
                 let loaded = try await recorder.manifest(for: directory)
                 guard !Task.isCancelled else { return }
                 manifest = loaded
+                _ = await recorder.prepareInfo(for: directory)
             } catch {
                 guard !Task.isCancelled else { return }
                 errorMessage = "Details unavailable: \(error.localizedDescription)"

@@ -82,7 +82,10 @@ struct ContentView: View {
         .sheet(isPresented: $showSessions, onDismiss: exportPendingRecording) {
             NavigationStack(path: $recordingsPath) {
                 List(recorder.recordings, id: \.self) { url in
-                    Button { openingRecording = url } label: {
+                    Button {
+                        guard openingRecording == nil else { return }
+                        openingRecording = url
+                    } label: {
                         HStack {
                             RecordingRow(recorder: recorder, directory: url)
                             Spacer()
@@ -94,14 +97,18 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) { recordingAlert = .delete(url) } label: {
+                        Button(role: .destructive) {
+                            guard openingRecording == nil else { return }
+                            recordingAlert = .delete(url)
+                        } label: {
                             Label("Delete", systemImage: "trash")
                         }
                         Button { selectExport(url) } label: {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }.tint(.blue)
                     }
-                    .disabled(recorder.busy || openingRecording != nil)
+                    .disabled(recorder.busy)
+                    .allowsHitTesting(openingRecording == nil)
                 }
                 .overlay {
                     if recorder.recordings.isEmpty { Text("No recordings yet.").foregroundStyle(.secondary) }
@@ -124,7 +131,7 @@ struct ContentView: View {
                 .task(id: openingRecording) {
                     guard let url = openingRecording else { return }
                     _ = await recorder.prepareInfo(for: url)
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, showSessions, openingRecording == url else { return }
                     recordingsPath.append(url)
                     openingRecording = nil
                 }
@@ -145,6 +152,7 @@ struct ContentView: View {
     }
 
     private func selectExport(_ url: URL) {
+        guard openingRecording == nil else { return }
         pendingExport = url
         showSessions = false
     }
